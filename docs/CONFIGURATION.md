@@ -194,6 +194,7 @@ Relative paths resolve from the project root. Absolute paths work too.
 |-------|---------|-------------|
 | `documents.supported_formats` | Built-in supported extension/filename list | File extensions to index; also accepts exact filenames (`Dockerfile`, `Makefile`, `Tiltfile`) |
 | `documents.exclude_patterns` | `[]` (empty) | Glob patterns for files/dirs to skip during indexing |
+| `documents.watch_excluded_dirs` | `false` | `false` stops the file watcher from watching directories that indexing skips; needs a watchdog with `directory_filter`, otherwise everything stays watched and the server logs it |
 | `documents.chunking.chunk_size` | 1000 | Max characters per chunk |
 | `documents.chunking.chunk_overlap` | 200 | Characters shared between consecutive chunks |
 | `documents.batch_size` | 500 | Storage-write batch, bounded to 1–5000 chunks |

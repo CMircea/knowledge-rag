@@ -118,6 +118,17 @@ documents:
   # Default: [] (nothing excluded — all supported files are indexed)
   exclude_patterns: []
 
+  # Whether the file watcher also watches directories that indexing skips:
+  # those matching exclude_patterns, and links that lead outside
+  # documents_dir. With false (default) the watcher prunes them, so large
+  # .git / node_modules trees hold no OS watches (inotify on Linux). That
+  # needs a watchdog release whose Observer.schedule() accepts
+  # directory_filter; with an older watchdog the whole tree is still watched
+  # and the server logs one [WATCHER] line saying pruning is unavailable.
+  # Either way, files in excluded directories are never indexed.
+  # Set true to watch the whole tree again.
+  watch_excluded_dirs: false
+
   # How documents are split into searchable chunks.
   #
   #   chunk_size    → Max characters per chunk. Larger = more context per

@@ -24,6 +24,7 @@ Data:    2026-04-16
 """
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -40,7 +41,7 @@ from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # ChromaDB
 import chromadb
@@ -61,12 +62,13 @@ from watchdog.events import FileSystemEventHandler
 
 # File watcher for auto-reindex
 from watchdog.observers import Observer
+from watchdog.version import VERSION_STRING as WATCHDOG_VERSION
 
 # Local imports
 from . import __version__
 from .config import config
 from .file_transaction import replace_with_retry, staged_text_file
-from .filesystem import io_path
+from .filesystem import io_path, resolve_path
 from .fts5_index import Fts5LexicalIndex, Fts5MigrationError, Fts5NotReadyError
 from .ingestion import Document, DocumentParser
 from .metrics import (
@@ -1625,6 +1627,70 @@ class DocumentWatcher(FileSystemEventHandler):
             return
         if self._is_supported(event.src_path) or self._is_supported(event.dest_path):
             self._schedule_reindex(event.dest_path)
+
+
+def _watch_directory_filter(base_dir: Path, patterns: List[str]) -> Callable[[str], bool]:
+    """Build watchdog's ``directory_filter``: watch a subdirectory only if indexing walks it.
+
+    Same rules and helpers as ``DocumentParser.iter_files``: a directory that
+    resolves outside ``base_dir`` (``is_path_within``) or matches
+    ``exclude_patterns`` (``DocumentParser._should_exclude``) is pruned with its
+    whole subtree. watchdog reports subdirectories under the scheduled root, so
+    the patterns see the relative path indexing sees. A path reported in
+    resolved form (a symlinked root, for example) is matched against the
+    resolved root, because ``_should_exclude`` would otherwise test the absolute
+    path and could prune the whole tree on an ancestor's name.
+    """
+    resolved_base = resolve_path(base_dir)
+
+    def watch(path: str) -> bool:
+        candidate = Path(path)
+        if not is_path_within(resolved_base, candidate):
+            return False
+        root = base_dir
+        try:
+            candidate.relative_to(base_dir)
+        except ValueError:
+            candidate, root = resolve_path(candidate), resolved_base
+        return not DocumentParser._should_exclude(candidate, root, patterns)
+
+    return watch
+
+
+def _supports_directory_filter(observer: Any) -> bool:
+    """Whether ``observer.schedule`` accepts ``directory_filter`` (watchdog PR #1407).
+
+    watchdog 7.1.0 and older reject the keyword with a TypeError, so the
+    signature is inspected instead of trying the call.
+    """
+    try:
+        return "directory_filter" in inspect.signature(observer.schedule).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _schedule_document_watch(observer: Any, handler: FileSystemEventHandler) -> bool:
+    """Schedule the recursive watch on documents_dir; return True when excluded directories are pruned.
+
+    With ``documents.watch_excluded_dirs: false`` (the default) the watch skips
+    every directory indexing skips, so ``.git`` or ``node_modules`` trees hold
+    no OS watches. A watchdog without ``directory_filter`` watches the whole
+    tree as before and one ``[WATCHER]`` line says so; events from excluded
+    directories still reach the handler and indexing ignores their files.
+    """
+    root = config.documents_dir
+    options: Dict[str, Any] = {}
+    if not config.watch_excluded_dirs:
+        if _supports_directory_filter(observer):
+            options["directory_filter"] = _watch_directory_filter(root, config.exclude_patterns)
+        else:
+            print(
+                f"[WATCHER] Excluded-directory pruning unavailable: watchdog {WATCHDOG_VERSION} "
+                "has no directory_filter, so excluded directories are still watched",
+                file=sys.stderr,
+            )
+    observer.schedule(handler, str(root), recursive=True, **options)
+    return bool(options)
 
 
 # =============================================================================
@@ -5920,10 +5986,11 @@ def main():
                 try:
                     watcher = DocumentWatcher(get_orchestrator, debounce_seconds=10.0)
                     observer = Observer()
-                    observer.schedule(watcher, str(config.documents_dir), recursive=True)
+                    pruned = _schedule_document_watch(observer, watcher)
                     observer.daemon = True
                     observer.start()
-                    print(f"[WATCHER] Monitoring {config.documents_dir} for changes", file=sys.stderr)
+                    scope = " (excluded directories not watched)" if pruned else ""
+                    print(f"[WATCHER] Monitoring {config.documents_dir} for changes{scope}", file=sys.stderr)
                 except Exception as e:
                     print(f"[WARN] Failed to start file watcher: {e}", file=sys.stderr)
                     print("[WARN] Auto-reindexing disabled. Use reindex_documents tool manually.", file=sys.stderr)

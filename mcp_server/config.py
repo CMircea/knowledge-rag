@@ -860,6 +860,14 @@ class Config:
     # see docs/reindex-operations.md), so apply it and reindex.
     ef_search: int = field(default_factory=lambda: _get("search", "ef_search", DEFAULT_EF_SEARCH))
 
+    # Appended after ef_search for the same positional-argument reason.
+    # False (default): the file watcher prunes every directory that indexing
+    # skips (exclude_patterns, or outside documents_dir), so .git, node_modules
+    # and the like hold no OS watch. Needs a watchdog with ``directory_filter``
+    # on ``schedule``; older releases fall back to watching everything. True
+    # restores the previous behaviour of watching the whole tree.
+    watch_excluded_dirs: bool = field(default_factory=lambda: _get("documents", "watch_excluded_dirs", False))
+
     def __post_init__(self):
         """Validate config values and ensure directories exist."""
         self._validate_chunking()
@@ -1076,7 +1084,7 @@ class Config:
         self._validate_query_expansions()
 
     def _validate_exclude_and_routes(self) -> None:
-        """Keep exclude_patterns str-only; convert keyword_routes and category_mappings scalars to text.
+        """Keep exclude_patterns str-only and watch_excluded_dirs bool; convert route and mapping scalars to text.
 
         YAML parses a bare ``4624`` as int, which breaks the str methods that
         indexing and query routing call on these tables (GH #261). YAML has
@@ -1090,6 +1098,9 @@ class Config:
             self.exclude_patterns = []
         else:
             self.exclude_patterns = [p for p in self.exclude_patterns if isinstance(p, str)]
+        if not isinstance(self.watch_excluded_dirs, bool):
+            print(f"[WARN] watch_excluded_dirs={self.watch_excluded_dirs!r} invalid, using False", file=sys.stderr)
+            self.watch_excluded_dirs = False
 
         routes: Dict[str, List[str]] = {}
         for cat, keywords in self.keyword_routes.items():
